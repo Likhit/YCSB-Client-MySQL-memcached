@@ -200,6 +200,14 @@ public class MemcachedClient extends DB {
 		}
 	}
 
+	public void asyncInsert(String table, String key, HashMap<String, ByteIterator> values) {
+		key = createQualifiedKey(table, key);
+		try {
+			memcachedClient().add(key, objectExpirationTime, toJson(values));
+		} catch (Exception e) {
+		}
+	}
+
 	@Override
 	public Status delete(String table, String key) {
 		key = createQualifiedKey(table, key);

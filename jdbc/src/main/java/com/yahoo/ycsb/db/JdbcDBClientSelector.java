@@ -13,7 +13,9 @@ public class JdbcDBClientSelector extends DB {
 
 	private final JdbcDBClient dbClient = new JdbcDBClient();
 	private final MemcachedClient memcachedClient = new MemcachedClient();
+	private MemcachedClient insertClient;
 	private boolean useCache;
+	private boolean asyncInsert;
 
 	@Override
 	public void init() throws DBException {
@@ -23,7 +25,13 @@ public class JdbcDBClientSelector extends DB {
 		dbClient.init();
 		memcachedClient.init();
 		useCache = Boolean.parseBoolean(getProperties().getProperty("use_cache"));
+		asyncInsert = Boolean.parseBoolean(getProperties().getProperty("async_insert"));
 		System.out.println("use cache " + useCache);
+		if (asyncInsert) {
+			insertClient = new MemcachedClient();
+			insertClient.setProperties(getProperties());
+			insertClient.init();
+		}
 	}
 
 	@Override
@@ -34,6 +42,7 @@ public class JdbcDBClientSelector extends DB {
 
 	@Override
 	public Status read(String table, String key, Set<String> fields, HashMap<String, ByteIterator> result) {
+		key = key.substring(4);
 		if (useCache) {
 			Status status = memcachedClient.read(table, key, fields, result);
 			if (Status.OK.equals(status)) {
@@ -41,7 +50,11 @@ public class JdbcDBClientSelector extends DB {
 			}
 			status = dbClient.read(table, key, fields, result);
 			if (Status.OK.equals(status)) {
-				memcachedClient.insert(table, key, result);
+				if (asyncInsert) {
+					insertClient.asyncInsert(table, key, result);
+				} else {
+					memcachedClient.insert(table, key, result);
+				}
 			}
 			return status;
 		}
@@ -59,6 +72,7 @@ public class JdbcDBClientSelector extends DB {
 
 	@Override
 	public Status update(String table, String key, HashMap<String, ByteIterator> values) {
+		key = key.substring(4);
 		if (useCache) {
 			this.memcachedClient.update(table, key, values);
 		}
