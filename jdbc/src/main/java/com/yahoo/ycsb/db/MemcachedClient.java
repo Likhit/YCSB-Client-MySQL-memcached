@@ -17,7 +17,11 @@
 
 package com.yahoo.ycsb.db;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import com.yahoo.ycsb.ByteIterator;
+import com.yahoo.ycsb.DB;
+import com.yahoo.ycsb.DBException;
+import com.yahoo.ycsb.Status;
+import com.yahoo.ycsb.StringByteIterator;
 
 import java.io.IOException;
 import java.io.StringWriter;
@@ -25,12 +29,31 @@ import java.io.Writer;
 import java.net.InetSocketAddress;
 import java.text.MessageFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Vector;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+
+import com.google.protobuf.Empty;
+
+import edu.usc.cs550.rejig.client.ErrorHandler;
+// We also use `edu.usc.cs550.rejig.clientMemcachedClient`; it is
+// not imported explicitly and referred to with its full path to
+// avoid conflicts with the class of the same name in this file.
+import edu.usc.cs550.rejig.client.configreader.RejigConfigReader;
+import edu.usc.cs550.rejig.client.SockIOPool;
+import edu.usc.cs550.rejig.interfaces.Fragment;
+import edu.usc.cs550.rejig.interfaces.RejigConfig;
+import edu.usc.cs550.rejig.interfaces.RejigReaderGrpc;
+
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import io.grpc.StatusRuntimeException;
 
 import org.codehaus.jackson.JsonFactory;
 import org.codehaus.jackson.JsonGenerator;
@@ -38,240 +61,362 @@ import org.codehaus.jackson.JsonNode;
 import org.codehaus.jackson.map.ObjectMapper;
 import org.codehaus.jackson.node.ObjectNode;
 
-import com.yahoo.ycsb.ByteIterator;
-import com.yahoo.ycsb.DB;
-import com.yahoo.ycsb.DBException;
-import com.yahoo.ycsb.Status;
-import com.yahoo.ycsb.StringByteIterator;
+import org.apache.log4j.Logger;
 
-import net.spy.memcached.ConnectionFactoryBuilder;
-import net.spy.memcached.FailureMode;
-// We also use `net.spy.memcached.MemcachedClient`; it is not imported
-// explicitly and referred to with its full path to avoid conflicts with the
-// class of the same name in this file.
-import net.spy.memcached.internal.GetFuture;
-import net.spy.memcached.internal.OperationFuture;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 /**
  * Concrete Memcached client implementation.
  */
 public class MemcachedClient extends DB {
 
-	protected static final ObjectMapper MAPPER = new ObjectMapper();
+  private final Logger logger = Logger.getLogger(getClass());
 
-	private boolean checkOperationStatus;
-	private long shutdownTimeoutMillis;
-	private int objectExpirationTime;
+  protected static final ObjectMapper MAPPER = new ObjectMapper();
 
-	public static final String HOSTS_PROPERTY = "memcached.hosts";
+  private int objectExpirationTime;
 
-	public static final int DEFAULT_PORT = 11211;
+  private String coordinatorHost;
 
-	private static final String TEMPORARY_FAILURE_MSG = "Temporary failure";
-	private static final String CANCELLED_MSG = "cancelled";
+  private int coordinatorPort;
 
-	public static final String SHUTDOWN_TIMEOUT_MILLIS_PROPERTY = "memcached.shutdownTimeoutMillis";
-	public static final String DEFAULT_SHUTDOWN_TIMEOUT_MILLIS = "30000";
+  private GrpcConfigReader configReader;
 
-	public static final String OBJECT_EXPIRATION_TIME_PROPERTY = "memcached.objectExpirationTime";
-	public static final String DEFAULT_OBJECT_EXPIRATION_TIME = String.valueOf(Integer.MAX_VALUE);
+  public static final String OBJECT_EXPIRATION_TIME_PROPERTY = "memcached.objectExpirationTime";
+  public static final String DEFAULT_OBJECT_EXPIRATION_TIME = String.valueOf(0);
 
-	public static final String CHECK_OPERATION_STATUS_PROPERTY = "memcached.checkOperationStatus";
-	public static final String CHECK_OPERATION_STATUS_DEFAULT = "true";
+  public static final String COORDINATOR_HOST = "coordinator.host";
 
-	public static final String READ_BUFFER_SIZE_PROPERTY = "memcached.readBufferSize";
-	public static final String DEFAULT_READ_BUFFER_SIZE = "3000000";
+  public static final String COORDINATOR_PORT = "coordinator.port";
 
-	public static final String OP_TIMEOUT_PROPERTY = "memcached.opTimeoutMillis";
-	public static final String DEFAULT_OP_TIMEOUT = "60000";
+  /**
+   * The MemcachedClient implementation that will be used to communicate
+   * with the memcached server.
+   */
+  private edu.usc.cs550.rejig.client.MemcachedClient client;
 
-	public static final String FAILURE_MODE_PROPERTY = "memcached.failureMode";
-	public static final FailureMode FAILURE_MODE_PROPERTY_DEFAULT = FailureMode.Redistribute;
+  /**
+   * @returns Underlying Memcached protocol client, implemented by
+   *     SpyMemcached.
+   */
+  protected edu.usc.cs550.rejig.client.MemcachedClient memcachedClient() {
+    return client;
+  }
 
-	public static final String PROTOCOL_PROPERTY = "memcached.protocol";
-	public static final ConnectionFactoryBuilder.Protocol DEFAULT_PROTOCOL = ConnectionFactoryBuilder.Protocol.TEXT;
+  @Override
+  public void init() throws DBException {
+    try {
+      client = createMemcachedClient();
+      objectExpirationTime = Integer.parseInt(getProperties()
+        .getProperty(OBJECT_EXPIRATION_TIME_PROPERTY, DEFAULT_OBJECT_EXPIRATION_TIME)
+      );
+      coordinatorHost = getProperties().getProperty(COORDINATOR_HOST);
+      coordinatorPort = Integer.parseInt(getProperties()
+        .getProperty(COORDINATOR_PORT));
+    } catch (Exception e) {
+      throw new DBException(e);
+    }
+  }
 
-	/**
-	 * The MemcachedClient implementation that will be used to communicate with the
-	 * memcached server.
-	 */
-	private net.spy.memcached.MemcachedClient client;
+  protected edu.usc.cs550.rejig.client.MemcachedClient createMemcachedClient()
+      throws Exception {
+    configReader = new GrpcConfigReader(coordinatorHost, coordinatorPort);
+    //configReader.setConfig(config);
 
-	/**
-	 * @returns Underlying Memcached protocol client, implemented by SpyMemcached.
-	 */
-	protected net.spy.memcached.MemcachedClient memcachedClient() {
-		return client;
-	}
+    SockIOPool.SockIOPoolOptions options = new SockIOPool
+      .SockIOPoolOptions();
+    options.initConn = 10;
+    options.minConn = 5;
+    options.maxConn = 25;
+    options.maintSleep = 20;
+    options.nagle = true;
+    options.aliveCheck = true;
 
-	@Override
-	public void init() throws DBException {
-		try {
-			client = createMemcachedClient();
-			checkOperationStatus = Boolean.parseBoolean(
-					getProperties().getProperty(CHECK_OPERATION_STATUS_PROPERTY, CHECK_OPERATION_STATUS_DEFAULT));
-			objectExpirationTime = Integer.parseInt(
-					getProperties().getProperty(OBJECT_EXPIRATION_TIME_PROPERTY, DEFAULT_OBJECT_EXPIRATION_TIME));
-			shutdownTimeoutMillis = Integer.parseInt(
-					getProperties().getProperty(SHUTDOWN_TIMEOUT_MILLIS_PROPERTY, DEFAULT_SHUTDOWN_TIMEOUT_MILLIS));
-		} catch (Exception e) {
-			throw new DBException(e);
-		}
-	}
+    String uuid = UUID.randomUUID().toString();
+    ClientErrorHandler errorHandler = new ClientErrorHandler();
+    edu.usc.cs550.rejig.client.MemcachedClient client =
+      new edu.usc.cs550.rejig.client.MemcachedClient(
+        null, errorHandler, uuid, configReader, options);
+    return client;
+  }
 
-	protected net.spy.memcached.MemcachedClient createMemcachedClient() throws Exception {
-		ConnectionFactoryBuilder connectionFactoryBuilder = new ConnectionFactoryBuilder();
+  @Override
+  public Status read(
+      String table, String key, Set<String> fields,
+      HashMap<String, ByteIterator> result) {
+    key = createQualifiedKey(table, key);
+    try {
+      Object document = memcachedClient().get(key);
+      if (document != null) {
+        fromJson((String) document, fields, result);
+      }
+      return Status.OK;
+    } catch (Exception e) {
+      logger.error("Error encountered for key: " + key, e);
+      return Status.ERROR;
+    }
+  }
 
-		connectionFactoryBuilder.setReadBufferSize(
-				Integer.parseInt(getProperties().getProperty(READ_BUFFER_SIZE_PROPERTY, DEFAULT_READ_BUFFER_SIZE)));
+  @Override
+  public Status scan(
+      String table, String startkey, int recordcount, Set<String> fields,
+      Vector<HashMap<String, ByteIterator>> result){
+    return Status.NOT_IMPLEMENTED;
+  }
 
-		connectionFactoryBuilder
-				.setOpTimeout(Integer.parseInt(getProperties().getProperty(OP_TIMEOUT_PROPERTY, DEFAULT_OP_TIMEOUT)));
+  @Override
+  public Status update(
+      String table, String key, HashMap<String, ByteIterator> values) {
+    key = createQualifiedKey(table, key);
+    try {
+      Date exp = new Date(System.currentTimeMillis() + objectExpirationTime);
+      boolean success = memcachedClient()
+        .replace(key, toJson(values), exp);
+      if (success) {
+        return Status.OK;
+      }
+      return Status.ERROR;
+    } catch (StatusException e) {
+      return e.status();
+    } catch (Exception e) {
+      logger.error("Error updating value with key: " + key, e);
+      return Status.ERROR;
+    }
+  }
 
-		String protocolString = getProperties().getProperty(PROTOCOL_PROPERTY);
-		connectionFactoryBuilder.setProtocol(protocolString == null ? DEFAULT_PROTOCOL
-				: ConnectionFactoryBuilder.Protocol.valueOf(protocolString.toUpperCase()));
+  @Override
+  public Status insert(
+      String table, String key, HashMap<String, ByteIterator> values) {
+    key = createQualifiedKey(table, key);
+    try {
+      Date exp = new Date(System.currentTimeMillis() + objectExpirationTime);
+      boolean success = memcachedClient()
+        .add(key, toJson(values), exp);
+      if (success) {
+        return Status.OK;
+      }
+      return Status.ERROR;
+    } catch (StatusException e) {
+      return e.status();
+    } catch (Exception e) {
+      logger.error("Error inserting value", e);
+      return Status.ERROR;
+    }
+  }
 
-		String failureString = getProperties().getProperty(FAILURE_MODE_PROPERTY);
-		connectionFactoryBuilder.setFailureMode(
-				failureString == null ? FAILURE_MODE_PROPERTY_DEFAULT : FailureMode.valueOf(failureString));
+  @Override
+  public Status delete(String table, String key) {
+    key = createQualifiedKey(table, key);
+    try {
+       boolean success = memcachedClient()
+        .delete(key);
+      if (success) {
+        return Status.OK;
+      }
+      return Status.ERROR;
+    } catch (StatusException e) {
+      return e.status();
+    } catch (Exception e) {
+      logger.error("Error deleting value", e);
+      return Status.ERROR;
+    }
+  }
 
-		// Note: this only works with IPv4 addresses due to its assumption of
-		// ":" being the separator of hostname/IP and port; this is not the case
-		// when dealing with IPv6 addresses.
-		//
-		// TODO(mbrukman): fix this.
-		List<InetSocketAddress> addresses = new ArrayList<InetSocketAddress>();
-		String[] hosts = getProperties().getProperty(HOSTS_PROPERTY).split(",");
-		for (String address : hosts) {
-			int colon = address.indexOf(":");
-			int port = DEFAULT_PORT;
-			String host = address;
-			if (colon != -1) {
-				port = Integer.parseInt(address.substring(colon + 1));
-				host = address.substring(0, colon);
-			}
-			addresses.add(new InetSocketAddress(host, port));
-		}
-		return new net.spy.memcached.MemcachedClient(connectionFactoryBuilder.build(), addresses);
-	}
+  @Override
+  public void cleanup() throws DBException {
+    if (client != null) {
+      configReader.shutDown();
+      memcachedClient().shutDown();
+    }
+  }
 
-	@Override
-	public Status read(String table, String key, Set<String> fields, HashMap<String, ByteIterator> result) {
-		key = createQualifiedKey(table, key);
-		try {
-			GetFuture<Object> future = memcachedClient().asyncGet(key);
-			Object document = future.get();
-			if (document != null) {
-				fromJson((String) document, fields, result);
-				return Status.OK;
-			}
-			return Status.NOT_FOUND;
-		} catch (Exception e) {
-			return Status.ERROR;
-		}
-	}
+  protected static String createQualifiedKey(String table, String key) {
+    return MessageFormat.format("{0}-{1}", table, key);
+  }
 
-	@Override
-	public Status scan(String table, String startkey, int recordcount, Set<String> fields,
-			Vector<HashMap<String, ByteIterator>> result) {
-		return Status.NOT_IMPLEMENTED;
-	}
+  protected static void fromJson(
+      String value, Set<String> fields,
+      Map<String, ByteIterator> result) throws IOException {
+    JsonNode json = MAPPER.readTree(value);
+    boolean checkFields = fields != null && !fields.isEmpty();
+    for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.getFields();
+         jsonFields.hasNext();
+         /* increment in loop body */) {
+      Map.Entry<String, JsonNode> jsonField = jsonFields.next();
+      String name = jsonField.getKey();
+      if (checkFields && !fields.contains(name)) {
+        continue;
+      }
+      JsonNode jsonValue = jsonField.getValue();
+      if (jsonValue != null && !jsonValue.isNull()) {
+        result.put(name, new StringByteIterator(jsonValue.asText()));
+      }
+    }
+  }
 
-	@Override
-	public Status update(String table, String key, HashMap<String, ByteIterator> values) {
-		key = createQualifiedKey(table, key);
-		try {
-			OperationFuture<Boolean> future = memcachedClient().replace(key, objectExpirationTime, toJson(values));
-			return getReturnCode(future);
-		} catch (Exception e) {
-			return Status.ERROR;
-		}
-	}
+  protected static String toJson(Map<String, ByteIterator> values)
+      throws IOException {
+    ObjectNode node = MAPPER.createObjectNode();
+    Map<String, String> stringMap = StringByteIterator.getStringMap(values);
+    for (Map.Entry<String, String> pair : stringMap.entrySet()) {
+      node.put(pair.getKey(), pair.getValue());
+    }
+    JsonFactory jsonFactory = new JsonFactory();
+    Writer writer = new StringWriter();
+    JsonGenerator jsonGenerator = jsonFactory.createJsonGenerator(writer);
+    MAPPER.writeTree(jsonGenerator, node);
+    return writer.toString();
+  }
+}
 
-	@Override
-	public Status insert(String table, String key, HashMap<String, ByteIterator> values) {
-		key = createQualifiedKey(table, key);
-		try {
-			OperationFuture<Boolean> future = memcachedClient().add(key, objectExpirationTime, toJson(values));
-			return getReturnCode(future);
-		} catch (Exception e) {
-			return Status.ERROR;
-		}
-	}
+class GrpcConfigReader implements RejigConfigReader {
+  private RejigConfig config;
 
-	public void asyncInsert(String table, String key, HashMap<String, ByteIterator> values) {
-		key = createQualifiedKey(table, key);
-		try {
-			memcachedClient().add(key, objectExpirationTime, toJson(values));
-		} catch (Exception e) {
-		}
-	}
+  private ManagedChannel channel;
 
-	@Override
-	public Status delete(String table, String key) {
-		key = createQualifiedKey(table, key);
-		try {
-			OperationFuture<Boolean> future = memcachedClient().delete(key);
-			return getReturnCode(future);
-		} catch (Exception e) {
-			return Status.ERROR;
-		}
-	}
+  private RejigReaderGrpc.RejigReaderBlockingStub blockingStub;
 
-	protected Status getReturnCode(OperationFuture<Boolean> future) {
-		if (!checkOperationStatus) {
-			return Status.OK;
-		}
-		if (future.getStatus().isSuccess()) {
-			return Status.OK;
-		} else if (TEMPORARY_FAILURE_MSG.equals(future.getStatus().getMessage())) {
-			return new Status("TEMPORARY_FAILURE", TEMPORARY_FAILURE_MSG);
-		} else if (CANCELLED_MSG.equals(future.getStatus().getMessage())) {
-			return new Status("CANCELLED_MSG", CANCELLED_MSG);
-		}
-		return new Status("ERROR", future.getStatus().getMessage());
-	}
+  public GrpcConfigReader(String host, int port) {
+    this(ManagedChannelBuilder.forAddress(host, port)
+      .usePlaintext()
+      .build()
+    );
+  }
 
-	@Override
-	public void cleanup() throws DBException {
-		if (client != null) {
-			memcachedClient().shutdown(shutdownTimeoutMillis, MILLISECONDS);
-		}
-	}
+  GrpcConfigReader(ManagedChannel channel) {
+    this.channel = channel;
+    blockingStub = RejigReaderGrpc.newBlockingStub(channel);
+  }
 
-	protected static String createQualifiedKey(String table, String key) {
-		return MessageFormat.format("{0}-{1}", table, key);
-	}
+  public void shutDown() throws DBException {
+    try {
+      if (channel != null) {
+        channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);
+        channel = null;
+      }
+    } catch (InterruptedException e) {
+      throw new DBException(e);
+    }
+  }
 
-	protected static void fromJson(String value, Set<String> fields, Map<String, ByteIterator> result)
-			throws IOException {
-		JsonNode json = MAPPER.readTree(value);
-		boolean checkFields = fields != null && !fields.isEmpty();
-		for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.getFields(); jsonFields.hasNext();
-		/* increment in loop body */) {
-			Map.Entry<String, JsonNode> jsonField = jsonFields.next();
-			String name = jsonField.getKey();
-			if (checkFields && fields.contains(name)) {
-				continue;
-			}
-			JsonNode jsonValue = jsonField.getValue();
-			if (jsonValue != null && !jsonValue.isNull()) {
-				result.put(name, new StringByteIterator(jsonValue.asText()));
-			}
-		}
-	}
+  @Override
+  public RejigConfig getConfig() {
+    RejigConfig config;
+    try {
+      config = blockingStub.getConfig(Empty.getDefaultInstance());
+    } catch (StatusRuntimeException e) {
+      throw new RuntimeException(e);
+    }
+    return config;
+  }
 
-	protected static String toJson(Map<String, ByteIterator> values) throws IOException {
-		ObjectNode node = MAPPER.createObjectNode();
-		Map<String, String> stringMap = StringByteIterator.getStringMap(values);
-		for (Map.Entry<String, String> pair : stringMap.entrySet()) {
-			node.put(pair.getKey(), pair.getValue());
-		}
-		JsonFactory jsonFactory = new JsonFactory();
-		Writer writer = new StringWriter();
-		JsonGenerator jsonGenerator = jsonFactory.createJsonGenerator(writer);
-		MAPPER.writeTree(jsonGenerator, node);
-		return writer.toString();
-	}
+  public void setConfig(RejigConfig config) {
+    this.config = config;
+  }
+}
+
+class ClientErrorHandler implements ErrorHandler {
+  @Override
+  public void handleErrorOnInit(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error) {
+      throw new StatusException(
+        new Status("INIT_ERROR", error.getMessage()));
+  }
+
+  @Override
+  public void handleErrorOnGet(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error,
+    final String cacheKey) {
+      throw new StatusException(
+        new Status("GET_ERROR", error.getMessage()));
+  }
+
+  @Override
+  public void handleErrorOnGet(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error,
+    final String[] cacheKeys) {
+      throw new StatusException(
+        new Status("MULTI_GET_ERROR", error.getMessage()));
+  }
+
+  @Override
+  public void handleErrorOnSet(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error,
+    final String cacheKey) {
+      throw new StatusException(
+        new Status("SET_ERROR", error.getMessage()));
+  }
+
+  @Override
+  public void handleErrorOnDelete(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error,
+    final String cacheKey) {
+      throw new StatusException(
+        new Status("DELETE_ERROR", error.getMessage()));
+  }
+
+  @Override
+  public void handleErrorOnFlush(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error) {
+      throw new StatusException(
+        new Status("FLUSH_ERROR", error.getMessage()));
+  }
+
+  @Override
+  public void handleErrorOnStats(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error) {
+      throw new StatusException(
+        new Status("STATS_ERROR", error.getMessage()));
+  }
+
+  @Override
+  public void handleErrorOnConf(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error) {
+      throw new StatusException(
+        new Status("CONF_ERROR", error.getMessage()));
+  }
+
+  @Override
+  public void handleErrorOnGrantLease(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error) {
+      throw new StatusException(
+        new Status("GRANT_ERROR", error.getMessage()));
+  }
+
+  @Override
+  public void handleErrorOnRevokeLease(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error) {
+      throw new StatusException(
+        new Status("REVOKE_ERROR", error.getMessage()));
+  }
+
+  @Override
+  public void handleErrorOnRefreshAndRetry(
+    final edu.usc.cs550.rejig.client.MemcachedClient client,
+    final Throwable error) {
+      throw new StatusException(
+        new Status("REFRESH_AND_RETRY_ERROR", error.getMessage()));
+    }
+}
+
+class StatusException extends RuntimeException {
+  private Status status;
+
+  public StatusException(Status status) {
+    this.status = status;
+  }
+
+  public Status status() {
+    return status;
+  }
 }
