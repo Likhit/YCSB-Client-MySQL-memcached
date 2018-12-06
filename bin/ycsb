@@ -51,53 +51,9 @@ COMMANDS = {
 }
 
 DATABASES = {
-    "accumulo"     : "com.yahoo.ycsb.db.accumulo.AccumuloClient",
-    "aerospike"    : "com.yahoo.ycsb.db.AerospikeClient",
-    "arangodb"     : "com.yahoo.ycsb.db.ArangoDBClient",
-    "arangodb3"    : "com.yahoo.ycsb.db.arangodb.ArangoDB3Client",
-    "asynchbase"   : "com.yahoo.ycsb.db.AsyncHBaseClient",
-    "basic"        : "com.yahoo.ycsb.BasicDB",
-    "cassandra-cql": "com.yahoo.ycsb.db.CassandraCQLClient",
-    "cassandra2-cql": "com.yahoo.ycsb.db.CassandraCQLClient",
-    "cloudspanner" : "com.yahoo.ycsb.db.cloudspanner.CloudSpannerClient",
-    "couchbase"    : "com.yahoo.ycsb.db.CouchbaseClient",
-    "couchbase2"   : "com.yahoo.ycsb.db.couchbase2.Couchbase2Client",
-    "azuredocumentdb" : "com.yahoo.ycsb.db.azuredocumentdb.AzureDocumentDBClient",
-    "dynamodb"     : "com.yahoo.ycsb.db.DynamoDBClient",
-    "elasticsearch": "com.yahoo.ycsb.db.ElasticsearchClient",
-    "geode"        : "com.yahoo.ycsb.db.GeodeClient",
-    "googlebigtable"  : "com.yahoo.ycsb.db.GoogleBigtableClient",
-    "googledatastore" : "com.yahoo.ycsb.db.GoogleDatastoreClient",
-    "hbase094"     : "com.yahoo.ycsb.db.HBaseClient",
-    "hbase098"     : "com.yahoo.ycsb.db.HBaseClient",
-    "hbase10"      : "com.yahoo.ycsb.db.HBaseClient10",
-    "hypertable"   : "com.yahoo.ycsb.db.HypertableClient",
-    "infinispan-cs": "com.yahoo.ycsb.db.InfinispanRemoteClient",
-    "infinispan"   : "com.yahoo.ycsb.db.InfinispanClient",
-    "jdbc"         : "com.yahoo.ycsb.db.JdbcDBClientSelector",
-    "cads"	       : "com.yahoo.ycsb.db.CacheDBClient",
-    "nvcache"      : "com.yahoo.ycsb.db.NVCacheDbValidateClient",
-    "migration"      : "com.yahoo.ycsb.db.CacheMigrationClient",
-    "kudu"         : "com.yahoo.ycsb.db.KuduYCSBClient",
-    "mapkeeper"    : "com.yahoo.ycsb.db.MapKeeperClient",
-    "memcached"    : "com.yahoo.ycsb.db.MemcachedClient",
-    "mongodb"      : "com.yahoo.ycsb.db.MongoDbClient",
-    "mongodb-async": "com.yahoo.ycsb.db.AsyncMongoDbClient",
-    "mongodb-cadswa": "com.yahoo.ycsb.db.CADSWaMongoDbClient",
-    "mongodb-cadswt": "com.yahoo.ycsb.db.CADSWtMongoDbClient",
-    "mongodb-cadswb": "com.yahoo.ycsb.db.CADSWbMongoDbClient",
-    "mongodb-mc-redlease": "com.yahoo.ycsb.db.CADSRedleaseMongoDbClient",
-    "nosqldb"      : "com.yahoo.ycsb.db.NoSqlDbClient",
-    "orientdb"     : "com.yahoo.ycsb.db.OrientDBClient",
-    "rados"        : "com.yahoo.ycsb.db.RadosClient",
-    "redis"        : "com.yahoo.ycsb.db.RedisClient",
-    "rest"         : "com.yahoo.ycsb.webservice.rest.RestClient",
-    "riak"         : "com.yahoo.ycsb.db.riak.RiakKVClient",
-    "s3"           : "com.yahoo.ycsb.db.S3Client",
-    "solr"         : "com.yahoo.ycsb.db.solr.SolrClient",
-    "solr6"        : "com.yahoo.ycsb.db.solr6.SolrClient",
-    "tarantool"    : "com.yahoo.ycsb.db.TarantoolClient",
-    "voldemort"    : "com.yahoo.ycsb.db.VoldemortClient"
+    "jdbc"          : "com.yahoo.ycsb.db.JdbcDBClient",
+    "memcached"     : "com.yahoo.ycsb.db.MemcachedClient",
+    "jdbc-memcached": "com.yahoo.ycsb.db.JdbcMemcachedClient"
 }
 
 OPTIONS = {
@@ -252,16 +208,6 @@ def main():
 
     # Classpath set up
     binding = args.database.split("-")[0]
-
-    if binding == "cassandra2":
-        warn("The 'cassandra2-cql' client has been deprecated. It has been "
-             "renamed to simply 'cassandra-cql'. This alias will be removed"
-             " in the next YCSB release.")
-        binding = "cassandra"
-
-    if binding == "couchbase":
-        warn("The 'couchbase' client has been deprecated. If you are using "
-             "Couchbase 4.0+ try using the 'couchbase2' client instead.")
 
     if is_distribution():
         db_dir = os.path.join(ycsb_home, binding + "-binding")
