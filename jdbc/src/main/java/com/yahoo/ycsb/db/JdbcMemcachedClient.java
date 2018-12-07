@@ -51,7 +51,6 @@ public class JdbcMemcachedClient extends DB {
 
   @Override
   public Status update(String table, String key, HashMap<String, ByteIterator> values) {
-    key = key.substring(4);
     this.memcachedClient.update(table, key, values);
     return dbClient.update(table, key, values);
   }
