@@ -106,13 +106,13 @@ public class MemcachedClient extends DB {
   @Override
   public void init() throws DBException {
     try {
-      client = createMemcachedClient();
       objectExpirationTime = Integer.parseInt(getProperties()
         .getProperty(OBJECT_EXPIRATION_TIME_PROPERTY, DEFAULT_OBJECT_EXPIRATION_TIME)
       );
       coordinatorHost = getProperties().getProperty(COORDINATOR_HOST);
       coordinatorPort = Integer.parseInt(getProperties()
         .getProperty(COORDINATOR_PORT));
+      client = createMemcachedClient();
     } catch (Exception e) {
       throw new DBException(e);
     }
