@@ -52,12 +52,18 @@ public class TerminatorThread extends Thread {
     workload.requestStop();
     System.err.println("Stop requested for workload. Now Joining!");
     for (Thread t : threads) {
+      int tries = 0;
       while (t.isAlive()) {
         try {
           t.join(waitTimeOutInMS);
           if (t.isAlive()) {
+            tries += 1;
+            if (tries > 5) {
+              t.stop();
+            }
             System.out.println("Still waiting for thread " + t.getName() + " to complete. " +
                 "Workload status: " + workload.isStopRequested());
+            Thread.sleep(2000);
           }
         } catch (InterruptedException e) {
           // Do nothing. Don't know why I was interrupted.

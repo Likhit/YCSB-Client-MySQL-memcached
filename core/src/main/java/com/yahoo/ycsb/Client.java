@@ -235,7 +235,7 @@ class StatusThread extends Thread {
     measurements.measure("THREAD_COUNT", threads);
 
     // TODO - once measurements allow for other number types, switch to using
-    // the raw bytes. Otherwise we can track in MB to avoid negative values 
+    // the raw bytes. Otherwise we can track in MB to avoid negative values
     // when faced with huge heaps.
     final int usedMem = Utils.getUsedMemoryMegaBytes();
     if (usedMem < minUsedMem) {
@@ -865,6 +865,7 @@ public final class Client {
           db.init();
         } catch (DBException | UnknownDBException e) {
           System.out.println("Unknown DB " + dbname);
+          e.printStackTrace();
           initFailed = true;
           break;
         }
