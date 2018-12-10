@@ -226,7 +226,7 @@ public class MemcachedClient extends DB {
   public void cleanup() throws DBException {
     if (client != null) {
       configReader.shutDown();
-      memcachedClient().shutDown();
+      //memcachedClient().shutDown();
     }
   }
 

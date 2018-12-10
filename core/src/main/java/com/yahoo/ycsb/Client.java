@@ -106,6 +106,12 @@ class StatusThread extends Thread {
     this.trackJVMStats = trackJVMStats;
   }
 
+  private boolean should_stop = false;
+
+  public void myStop() {
+    should_stop = true;
+  }
+
   /**
    * Run and periodically report status.
    */
@@ -133,7 +139,7 @@ class StatusThread extends Thread {
       startIntervalMs = nowMs;
       deadline += sleeptimeNs;
     }
-    while (!alldone);
+    while (!should_stop);
 
     if (trackJVMStats) {
       measureJVM();
@@ -788,9 +794,14 @@ public final class Client {
 
       opsDone = 0;
 
+      long remainingTime = 420 * 1000;
       for (Map.Entry<Thread, ClientThread> entry : threads.entrySet()) {
         try {
-          entry.getKey().join();
+          long startTime = System.currentTimeMillis();
+          if (remainingTime > 0) {
+            entry.getKey().join(remainingTime);
+          }
+          remainingTime -= (System.currentTimeMillis() - startTime);
           opsDone += entry.getValue().getOpsDone();
         } catch (InterruptedException ignored) {
           // ignored
@@ -800,6 +811,7 @@ public final class Client {
       en = System.currentTimeMillis();
     }
 
+    System.out.println("Main threads pseudo completed.");
     try {
       try (final TraceScope span = tracer.newScope(CLIENT_CLEANUP_SPAN)) {
 
@@ -810,6 +822,7 @@ public final class Client {
         if (status) {
           // wake up status thread if it's asleep
           statusthread.interrupt();
+          statusthread.myStop();
           // at this point we assume all the monitored threads are already gone as per above join loop.
           try {
             statusthread.join();
